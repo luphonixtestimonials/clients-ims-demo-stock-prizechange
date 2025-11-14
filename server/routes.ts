@@ -348,73 +348,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/stock-movements", async (req, res) => {
     try {
-      const { priceOption, newSellingPrice, newCostPrice, ...movementData } = req.body;
-      
-      const parsed = insertStockMovementSchema.safeParse(movementData);
+      const parsed = insertStockMovementSchema.safeParse(req.body);
       if (!parsed.success) {
         const error = fromZodError(parsed.error);
         return res.status(400).json({ error: error.message });
       }
 
       const movement = await storage.createStockMovement(parsed.data);
-
-      // Handle price update and account entry for purchases with new pricing
-      if (
-        parsed.data.type === "in" && 
-        (parsed.data.reason === "Purchase" || parsed.data.reason === "purchase") &&
-        priceOption === "new" &&
-        newSellingPrice &&
-        newCostPrice
-      ) {
-        const sellingPrice = parseFloat(newSellingPrice);
-        const costPrice = parseFloat(newCostPrice);
-        const quantity = parsed.data.quantity;
-
-        // Update product prices
-        const product = await storage.getProduct(parsed.data.productId);
-        if (product) {
-          await storage.updateProduct(parsed.data.productId, {
-            ...product,
-            price: sellingPrice.toFixed(2),
-            costPrice: costPrice.toFixed(2),
-          });
-
-          // Record purchase profit/loss in accounts table
-          const difference = sellingPrice - costPrice;
-          const totalDifference = difference * quantity;
-
-          const currentDate = new Date();
-          const fiscalYear = currentDate.getFullYear();
-          const fiscalMonth = currentDate.getMonth() + 1;
-          const fiscalQuarter = Math.ceil(fiscalMonth / 3);
-
-          if (difference !== 0) {
-            await db.insert(accounts).values({
-              id: nanoid(),
-              transactionType: "purchase",
-              referenceId: movement.id,
-              referenceNumber: parsed.data.sku,
-              revenue: "0.00",
-              cost: (costPrice * quantity).toFixed(2),
-              profit: totalDifference.toFixed(2),
-              productId: parsed.data.productId,
-              productName: parsed.data.productName,
-              category: product.category,
-              quantity: quantity,
-              notes: difference > 0 
-                ? `Purchase with new pricing - potential profit of $${difference.toFixed(2)} per unit`
-                : `Purchase with new pricing - potential loss of $${Math.abs(difference).toFixed(2)} per unit`,
-              fiscalYear,
-              fiscalMonth,
-              fiscalQuarter,
-            });
-          }
-        }
-      }
-
       res.status(201).json(movement);
     } catch (error) {
-      console.error("Error creating stock movement:", error);
       res.status(500).json({ error: "Failed to create stock movement" });
     }
   });
