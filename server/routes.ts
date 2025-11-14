@@ -1,0 +1,715 @@
+import type { Express } from "express";
+import { createServer, type Server } from "http";
+import multer from "multer";
+import { storage } from "./storage";
+import { qrCodeService } from "./qr-service";
+import {
+  products,
+  orders,
+  orderItems,
+  returns,
+  returnItems,
+  stockMovements,
+  stockStats,
+  discountCodes,
+  accounts,
+  insertProductSchema,
+  insertOrderSchema,
+  insertOrderItemSchema,
+  insertReturnSchema,
+  insertReturnItemSchema,
+  insertStockMovementSchema,
+  insertDiscountCodeSchema,
+} from "@shared/schema";
+import { z } from "zod";
+import { fromZodError } from "zod-validation-error";
+import { nanoid } from "nanoid";
+import { log } from "./log";
+import { db } from "./db";
+import { emailService } from "./email-service";
+
+// Configure multer for file uploads (in-memory storage)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB limit
+  },
+  fileFilter: (_req, file, cb) => {
+    // Accept only image files
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed"));
+    }
+  },
+});
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // QR Code generation endpoint
+  app.post("/api/qr-code/generate", async (req, res) => {
+    try {
+      const { data } = req.body;
+      if (!data || typeof data !== "string") {
+        return res.status(400).json({ error: "Data parameter is required" });
+      }
+
+      const qrCodeDataURL = await qrCodeService.generateQRCode(data);
+      res.json({ qrCode: qrCodeDataURL });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to generate QR code" });
+    }
+  });
+
+  // Get QR code as image
+  app.get("/api/qr-code/:data", async (req, res) => {
+    try {
+      const data = decodeURIComponent(req.params.data);
+      const buffer = await qrCodeService.generateQRCodeBuffer(data);
+      res.setHeader("Content-Type", "image/png");
+      res.send(buffer);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to generate QR code" });
+    }
+  });
+
+  // Image upload endpoint
+  app.post("/api/upload/image", upload.single("image"), async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: "No image file provided" });
+      }
+
+      // Convert buffer to base64 data URL
+      const base64 = req.file.buffer.toString("base64");
+      const dataURL = `data:${req.file.mimetype};base64,${base64}`;
+
+      res.json({ url: dataURL });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to upload image" });
+    }
+  });
+
+  // Multiple image upload endpoint
+  app.post("/api/upload/images", upload.array("images", 5), async (req, res) => {
+    try {
+      if (!req.files || !Array.isArray(req.files) || req.files.length === 0) {
+        return res.status(400).json({ error: "No image files provided" });
+      }
+
+      const urls = req.files.map((file) => {
+        const base64 = file.buffer.toString("base64");
+        return `data:${file.mimetype};base64,${base64}`;
+      });
+
+      res.json({ urls });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to upload images" });
+    }
+  });
+  // Product routes
+  app.get("/api/products", async (_req, res) => {
+    try {
+      const products = await storage.getProducts();
+      res.json(products);
+    } catch (error) {
+      console.error("Error fetching products:", error);
+      res.status(500).json({ error: "Failed to fetch products" });
+    }
+  });
+
+  app.get("/api/products/:id", async (req, res) => {
+    try {
+      const product = await storage.getProduct(req.params.id);
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+      res.json(product);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch product" });
+    }
+  });
+
+  app.post("/api/products", async (req, res) => {
+    try {
+      const parsed = insertProductSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      // Check if SKU already exists
+      const existing = await storage.getProductBySKU(parsed.data.sku);
+      if (existing) {
+        return res.status(400).json({ error: "Product with this SKU already exists" });
+      }
+
+      const product = await storage.createProduct(parsed.data);
+
+      // Record purchase profit/loss in accounts table
+      if (parsed.data.costPrice && parsed.data.stockQuantity > 0) {
+        const sellingPrice = parseFloat(parsed.data.price.toString());
+        const costPrice = parseFloat(parsed.data.costPrice.toString());
+        const quantity = parsed.data.stockQuantity;
+
+        const difference = sellingPrice - costPrice;
+        const totalDifference = difference * quantity;
+
+        const currentDate = new Date();
+        const fiscalYear = currentDate.getFullYear();
+        const fiscalMonth = currentDate.getMonth() + 1;
+        const fiscalQuarter = Math.ceil(fiscalMonth / 3);
+
+        if (difference > 0) {
+          // Potential profit (selling price > cost price)
+          await db.insert(accounts).values({
+            id: nanoid(),
+            transactionType: "purchase",
+            referenceId: product.id,
+            referenceNumber: product.sku,
+            revenue: "0.00",
+            cost: (costPrice * quantity).toFixed(2),
+            profit: totalDifference.toFixed(2),
+            productId: product.id,
+            productName: product.productName,
+            category: product.category,
+            quantity: quantity,
+            notes: `Purchase with potential profit of $${difference.toFixed(2)} per unit`,
+            fiscalYear,
+            fiscalMonth,
+            fiscalQuarter,
+          });
+        } else if (difference < 0) {
+          // Potential loss (selling price < cost price)
+          await db.insert(accounts).values({
+            id: nanoid(),
+            transactionType: "purchase",
+            referenceId: product.id,
+            referenceNumber: product.sku,
+            revenue: "0.00",
+            cost: (costPrice * quantity).toFixed(2),
+            profit: totalDifference.toFixed(2), // This will be negative
+            productId: product.id,
+            productName: product.productName,
+            category: product.category,
+            quantity: quantity,
+            notes: `Purchase with potential loss of $${Math.abs(difference).toFixed(2)} per unit`,
+            fiscalYear,
+            fiscalMonth,
+            fiscalQuarter,
+          });
+        }
+      }
+
+      res.status(201).json(product);
+    } catch (error: any) {
+      console.error("Error creating product:", error);
+      res.status(500).json({ error: "Failed to create product" });
+    }
+  });
+
+  app.patch("/api/products/:id", async (req, res) => {
+    try {
+      const parsed = insertProductSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      // Check if SKU already exists for another product
+      const existing = await storage.getProductBySKU(parsed.data.sku);
+      if (existing && existing.id !== req.params.id) {
+        return res.status(400).json({ error: "Product with this SKU already exists" });
+      }
+
+      const product = await storage.updateProduct(req.params.id, parsed.data);
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+      res.json(product);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update product" });
+    }
+  });
+
+  app.delete("/api/products/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteProduct(req.params.id);
+      if (!success) {
+        return res.status(404).json({ error: "Product not found" });
+      }
+      res.status(204).send();
+    } catch (error: any) {
+      console.error('Error deleting product:', error);
+      const errorMessage = error.message || "Failed to delete product";
+      res.status(500).json({ error: errorMessage });
+    }
+  });
+
+  // Order routes
+  app.get("/api/orders", async (_req, res) => {
+    try {
+      const orders = await storage.getOrders();
+      res.json(orders);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch orders" });
+    }
+  });
+
+  app.get("/api/orders/:id", async (req, res) => {
+    try {
+      const order = await storage.getOrder(req.params.id);
+      if (!order) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      res.json(order);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch order" });
+    }
+  });
+
+  app.get("/api/orders/customer/:email", async (req, res) => {
+    try {
+      const orders = await storage.getOrdersByCustomerEmail(req.params.email);
+      res.json(orders);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch orders" });
+    }
+  });
+
+  app.post("/api/orders", async (req, res) => {
+    try {
+      const { items, ...orderData } = req.body;
+
+      const parsedOrder = insertOrderSchema.safeParse(orderData);
+      if (!parsedOrder.success) {
+        const error = fromZodError(parsedOrder.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      // Validate items
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: "Order must have at least one item" });
+      }
+
+      const orderItemsSchema = z.array(insertOrderItemSchema);
+      const parsedItems = orderItemsSchema.safeParse(items);
+      if (!parsedItems.success) {
+        const error = fromZodError(parsedItems.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const order = await storage.createOrder(parsedOrder.data, parsedItems.data);
+      res.status(201).json(order);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to create order" });
+    }
+  });
+
+  app.patch("/api/orders/:id", async (req, res) => {
+    try {
+      const parsed = insertOrderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const order = await storage.updateOrder(req.params.id, parsed.data);
+      if (!order) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      res.json(order);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update order" });
+    }
+  });
+
+  app.delete("/api/orders/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteOrder(req.params.id);
+      if (!success) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete order" });
+    }
+  });
+
+  // Stock Movement routes
+  app.get("/api/stock-movements", async (req, res) => {
+    try {
+      const productId = req.query.productId as string | undefined;
+      const movements = await storage.getStockMovements(productId);
+      res.json(movements);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch stock movements" });
+    }
+  });
+
+  app.post("/api/stock-movements", async (req, res) => {
+    try {
+      const { priceOption, newSellingPrice, newCostPrice, ...movementData } = req.body;
+      
+      const parsed = insertStockMovementSchema.safeParse(movementData);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const movement = await storage.createStockMovement(parsed.data);
+
+      // Handle price update and account entry for purchases with new pricing
+      if (
+        parsed.data.type === "in" && 
+        (parsed.data.reason === "Purchase" || parsed.data.reason === "purchase") &&
+        priceOption === "new" &&
+        newSellingPrice &&
+        newCostPrice
+      ) {
+        const sellingPrice = parseFloat(newSellingPrice);
+        const costPrice = parseFloat(newCostPrice);
+        const quantity = parsed.data.quantity;
+
+        // Update product prices
+        const product = await storage.getProduct(parsed.data.productId);
+        if (product) {
+          await storage.updateProduct(parsed.data.productId, {
+            ...product,
+            price: sellingPrice.toFixed(2),
+            costPrice: costPrice.toFixed(2),
+          });
+
+          // Record purchase profit/loss in accounts table
+          const difference = sellingPrice - costPrice;
+          const totalDifference = difference * quantity;
+
+          const currentDate = new Date();
+          const fiscalYear = currentDate.getFullYear();
+          const fiscalMonth = currentDate.getMonth() + 1;
+          const fiscalQuarter = Math.ceil(fiscalMonth / 3);
+
+          if (difference !== 0) {
+            await db.insert(accounts).values({
+              id: nanoid(),
+              transactionType: "purchase",
+              referenceId: movement.id,
+              referenceNumber: parsed.data.sku,
+              revenue: "0.00",
+              cost: (costPrice * quantity).toFixed(2),
+              profit: totalDifference.toFixed(2),
+              productId: parsed.data.productId,
+              productName: parsed.data.productName,
+              category: product.category,
+              quantity: quantity,
+              notes: difference > 0 
+                ? `Purchase with new pricing - potential profit of $${difference.toFixed(2)} per unit`
+                : `Purchase with new pricing - potential loss of $${Math.abs(difference).toFixed(2)} per unit`,
+              fiscalYear,
+              fiscalMonth,
+              fiscalQuarter,
+            });
+          }
+        }
+      }
+
+      res.status(201).json(movement);
+    } catch (error) {
+      console.error("Error creating stock movement:", error);
+      res.status(500).json({ error: "Failed to create stock movement" });
+    }
+  });
+
+  app.get("/api/stock-movements/low-stock", async (req, res) => {
+    try {
+      const threshold = req.query.threshold ? parseInt(req.query.threshold as string) : 10;
+      const products = await storage.getLowStockProducts(threshold);
+      res.json(products);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch low stock products" });
+    }
+  });
+
+  // Stock stats routes
+  app.get("/api/stock-stats", async (_req, res) => {
+    try {
+      const stats = await storage.getStockStats();
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch stock stats" });
+    }
+  });
+
+  app.get("/api/stock-stats/:productId", async (req, res) => {
+    try {
+      const stats = await storage.getStockStatsByProduct(req.params.productId);
+      if (!stats) {
+        return res.status(404).json({ error: "Stock stats not found" });
+      }
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch stock stats" });
+    }
+  });
+
+  // Return routes
+  app.get("/api/returns", async (_req, res) => {
+    try {
+      const returns = await storage.getReturns();
+      res.json(returns);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch returns" });
+    }
+  });
+
+  app.get("/api/returns/:id", async (req, res) => {
+    try {
+      const ret = await storage.getReturn(req.params.id);
+      if (!ret) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+      res.json(ret);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch return" });
+    }
+  });
+
+  app.post("/api/returns", async (req, res) => {
+    try {
+      const { items, ...returnData } = req.body;
+
+      console.log('Creating return with data:', {
+        creditAmount: returnData.creditAmount,
+        refundAmount: returnData.refundAmount,
+        exchangeValue: returnData.exchangeValue,
+        additionalPayment: returnData.additionalPayment,
+        customerEmail: returnData.customerEmail,
+        itemsCount: items?.length
+      });
+
+      const newReturn = await storage.createReturn(returnData, items);
+
+      // Create discount code if there's a credit amount (return value > exchange value)
+      // Parse credit amount - it can be null, undefined, or a string
+      const creditAmount = returnData.creditAmount && returnData.creditAmount !== "0" && returnData.creditAmount !== "" 
+        ? parseFloat(returnData.creditAmount) 
+        : 0;
+      
+      console.log('Checking store credit creation:', {
+        rawCreditAmount: returnData.creditAmount,
+        parsedCreditAmount: creditAmount,
+        hasEmail: !!returnData.customerEmail,
+        shouldCreate: creditAmount > 0 && returnData.customerEmail
+      });
+      
+      if (creditAmount > 0 && returnData.customerEmail) {
+        const code = `CREDIT-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
+        const expiresAt = new Date();
+        expiresAt.setFullYear(expiresAt.getFullYear() + 1); // 1 year expiry
+
+        console.log('Creating discount code for store credit:', {
+          code,
+          amount: creditAmount.toFixed(2),
+          email: returnData.customerEmail
+        });
+
+        try {
+          const discountCode = await storage.createDiscountCode({
+            code,
+            customerEmail: returnData.customerEmail,
+            amount: creditAmount.toFixed(2),
+            expiresAt,
+          });
+
+          console.log('Discount code created successfully:', {
+            id: discountCode.id,
+            code: discountCode.code,
+            amount: discountCode.amount
+          });
+
+          // Send email notification
+          try {
+            await emailService.sendDiscountCode(
+              returnData.customerEmail,
+              code,
+              creditAmount.toFixed(2),
+              expiresAt
+            );
+            console.log('Email notification sent successfully');
+          } catch (emailError) {
+            console.error('Failed to send discount code email:', emailError);
+          }
+        } catch (discountError) {
+          console.error('Failed to create discount code:', discountError);
+          console.error('Discount code error details:', discountError);
+        }
+      } else {
+        console.log('Skipping discount code creation:', {
+          creditAmount,
+          hasEmail: !!returnData.customerEmail,
+          reason: creditAmount <= 0 ? 'No credit amount' : 'No customer email'
+        });
+      }
+
+      // Log payable account if exchange value > return value
+      if (returnData.additionalPayment && parseFloat(returnData.additionalPayment) > 0) {
+        console.log('Payable account created:', {
+          customerEmail: returnData.customerEmail,
+          amount: returnData.additionalPayment,
+          returnNumber: newReturn.returnNumber
+        });
+      }
+
+      res.json(newReturn);
+    } catch (error: any) {
+      console.error('Error creating return:', error);
+      res.status(500).json({ message: error.message });
+    }
+  });
+
+  app.patch("/api/returns/:id", async (req, res) => {
+    try {
+      const parsed = insertReturnSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const ret = await storage.updateReturn(req.params.id, parsed.data);
+      if (!ret) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+      res.json(ret);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update return" });
+    }
+  });
+
+  // Discount code routes
+  app.get("/api/discount-codes", async (req, res) => {
+    try {
+      const customerEmail = req.query.customerEmail as string | undefined;
+      const codes = await storage.getDiscountCodes(customerEmail);
+      res.json(codes);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch discount codes" });
+    }
+  });
+
+  app.get("/api/discount-codes/:code", async (req, res) => {
+    try {
+      const code = await storage.getDiscountCode(req.params.code);
+      if (!code) {
+        return res.status(404).json({ error: "Discount code not found" });
+      }
+      res.json(code);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch discount code" });
+    }
+  });
+
+  app.post("/api/discount-codes/:code/use", async (req, res) => {
+    try {
+      const schema = z.object({
+        amountUsed: z.string().refine((val) => {
+          const num = parseFloat(val);
+          return !isNaN(num) && num > 0;
+        }, { message: "Amount used must be a positive number" }),
+      });
+
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const result = await storage.useDiscountCode(req.params.code, parsed.data.amountUsed);
+
+      if (!result.wasFound) {
+        return res.status(404).json({ error: "Discount code not found" });
+      }
+
+      if (result.error) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({
+        success: true,
+        remainingCredit: result.updated,
+        fullyUsed: result.wasDeleted
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to use discount code" });
+    }
+  });
+
+  app.delete("/api/discount-codes/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteDiscountCode(req.params.id);
+      if (!success) {
+        return res.status(404).json({ error: "Discount code not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete discount code" });
+    }
+  });
+
+  // Accounts routes
+  app.get("/api/accounts", async (_req, res) => {
+    try {
+      const accountsData = await db.select().from(accounts);
+      res.json(accountsData);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch accounts" });
+    }
+  });
+
+  // Invoice generation
+  app.get("/api/orders/:id/invoice", async (req, res) => {
+    try {
+      const order = await storage.getOrder(req.params.id);
+      if (!order) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+
+      const {pdfService } = await import('./pdf-service');
+      const pdfBuffer = await pdfService.generateInvoice(order);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="invoice-${order.orderNumber}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Invoice generation error:', error);
+      res.status(500).json({ error: "Failed to generate invoice" });
+    }
+  });
+
+  // Return invoice generation
+  app.get("/api/returns/:id/invoice", async (req, res) => {
+    try {
+      const returnData = await storage.getReturn(req.params.id);
+      if (!returnData) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+
+      const order = await storage.getOrder(returnData.orderId);
+      if (!order) {
+        return res.status(404).json({ error: "Original order not found" });
+      }
+
+      const {pdfService } = await import('./pdf-service');
+      const pdfBuffer = await pdfService.generateReturnInvoice(returnData, order);
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="return-invoice-${returnData.returnNumber}.pdf"`);
+      res.send(pdfBuffer);
+    } catch (error) {
+      console.error('Return invoice generation error:', error);
+      res.status(500).json({ error: "Failed to generate return invoice" });
+    }
+  });
+
+  const httpServer = createServer(app);
+
+  return httpServer;
+}
