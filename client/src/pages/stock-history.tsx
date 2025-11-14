@@ -163,6 +163,11 @@ export default function StockHistory() {
       }
     });
 
+    // Update available to match formula: available = purchased + returned - sold
+    Array.from(statsMap.values()).forEach(stats => {
+      stats.available = stats.purchased + stats.returned - stats.sold;
+    });
+
     return Array.from(statsMap.values());
   }, [products, movements, orders, returns]);
 
@@ -173,13 +178,18 @@ export default function StockHistory() {
       const stats = stockStats.find(s => s.productId === product.id);
       return {
         ...product,
-        available: stats?.available || product.stockQuantity,
+        available: stats?.available || 0,
         sold: stats?.sold || 0,
         returned: stats?.returned || 0,
         purchased: stats?.purchased || 0,
       };
     });
   }, [products, stockStats]);
+
+  // Prepare purchased stock data for separate table
+  const purchasedStockData = useMemo(() => {
+    return productStockData.filter(p => p.purchased > 0);
+  }, [productStockData]);
 
   // Get unique categories
   const categories = useMemo(() => {
@@ -517,22 +527,12 @@ export default function StockHistory() {
                           <SortIcon field="returned" />
                         </Button>
                       </TableHead>
-                      <TableHead className="text-right">
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleSort("purchased")}
-                          className="hover:bg-transparent p-0 h-auto font-medium ml-auto flex"
-                        >
-                          Purchased
-                          <SortIcon field="purchased" />
-                        </Button>
-                      </TableHead>
-                    </TableRow>
+                      </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredAndSortedProducts.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                           No products found
                         </TableCell>
                       </TableRow>
@@ -561,8 +561,51 @@ export default function StockHistory() {
                           <TableCell className="text-right">
                             <span className="text-blue-600 font-semibold">{product.returned}</span>
                           </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Purchased Stock Table */}
+          <Card className="mb-8">
+            <CardHeader>
+              <CardTitle>Purchased Stock</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Track all stock added through purchases
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product Name</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead className="text-right">Purchased Quantity</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {purchasedStockData.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
+                          No purchased stock records
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      purchasedStockData.map((product) => (
+                        <TableRow key={product.id}>
+                          <TableCell className="font-medium">{product.productName}</TableCell>
+                          <TableCell className="font-mono text-sm">{product.sku}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{product.category}</Badge>
+                          </TableCell>
                           <TableCell className="text-right">
-                            <span className="text-purple-600 font-semibold">{product.purchased || 0}</span>
+                            <span className="text-purple-600 font-semibold">{product.purchased}</span>
                           </TableCell>
                         </TableRow>
                       ))

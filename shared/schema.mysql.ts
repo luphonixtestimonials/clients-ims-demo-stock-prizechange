@@ -1,4 +1,3 @@
-
 import { mysqlTable, varchar, int, decimal, text, boolean, timestamp } from "drizzle-orm/mysql-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
@@ -137,28 +136,33 @@ export const accounts = mysqlTable("accounts", {
   transactionType: varchar("transaction_type", { length: 50 }).notNull(),
   referenceId: varchar("reference_id", { length: 36 }),
   referenceNumber: varchar("reference_number", { length: 50 }),
-  
+
   revenue: decimal("revenue", { precision: 10, scale: 2 }).default("0.00").notNull(),
   cost: decimal("cost", { precision: 10, scale: 2 }).default("0.00").notNull(),
   profit: decimal("profit", { precision: 10, scale: 2 }).default("0.00").notNull(),
-  
+
   taxAmount: decimal("tax_amount", { precision: 10, scale: 2 }).default("0.00"),
   discountAmount: decimal("discount_amount", { precision: 10, scale: 2 }).default("0.00"),
   shippingCost: decimal("shipping_cost", { precision: 10, scale: 2 }).default("0.00"),
-  
+
   productId: varchar("product_id", { length: 36 }),
   productName: varchar("product_name", { length: 255 }),
   category: varchar("category", { length: 100 }),
   quantity: int("quantity").default(0),
-  
+
   customerName: varchar("customer_name", { length: 100 }),
   customerEmail: varchar("customer_email", { length: 150 }),
-  
+
   notes: text("notes"),
   fiscalYear: int("fiscal_year"),
   fiscalMonth: int("fiscal_month"),
   fiscalQuarter: int("fiscal_quarter"),
-  
+
   transactionDate: timestamp("transaction_date").default(sql`CURRENT_TIMESTAMP`),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertAccountSchema = createInsertSchema(accounts, {
+  transactionType: z.enum(["sale", "purchase", "return", "refund", "adjustment", "direct_income"]),
+  revenue: z.string().min(1, "Revenue is required"),
 });

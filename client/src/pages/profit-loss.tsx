@@ -246,50 +246,83 @@ export default function ProfitLoss() {
   const statistics = useMemo(() => {
     const totalRevenue = profitData.reduce((sum, d) => sum + d.revenue, 0);
     const totalCost = profitData.reduce((sum, d) => sum + d.cost, 0);
-    const netProfit = totalRevenue - totalCost;
-    const profitMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
-
-    // Calculate purchasing stats from accounts table
-    const purchaseAccounts = accounts.filter(a => a.transactionType === "purchase");
     
-    // Purchase profit/loss from accounts
-    const purchaseProfit = purchaseAccounts.reduce((sum, a) => {
-      const profit = parseFloat(a.profit.toString());
-      return profit > 0 ? sum + profit : sum;
-    }, 0);
-    
-    const purchaseLoss = purchaseAccounts.reduce((sum, a) => {
-      const profit = parseFloat(a.profit.toString());
-      return profit < 0 ? sum + Math.abs(profit) : sum;
+    // Sales = Total Revenue from orders (stock out)
+    const sales = orders.reduce((sum, order) => {
+      return sum + parseFloat(order.totalAmount.toString());
     }, 0);
 
-    // Sales profit/loss from orders
-    const salesProfit = orders.reduce((sum, order) => {
-      const revenue = parseFloat(order.totalAmount.toString());
-      let cost = 0;
-      order.items.forEach(item => {
-        const product = productMap.get(item.productId);
-        const costPrice = product?.costPrice ? parseFloat(product.costPrice.toString()) : 0;
-        cost += costPrice * item.quantity;
-      });
-      const profit = revenue - cost;
-      return profit > 0 ? sum + profit : sum;
+    // Subtract refunded amounts
+    const refundAmount = returns.reduce((sum, ret) => {
+      return sum + (ret.refundAmount ? parseFloat(ret.refundAmount.toString()) : 0);
     }, 0);
 
-    const salesLoss = orders.reduce((sum, order) => {
-      const revenue = parseFloat(order.totalAmount.toString());
-      let cost = 0;
-      order.items.forEach(item => {
-        const product = productMap.get(item.productId);
-        const costPrice = product?.costPrice ? parseFloat(product.costPrice.toString()) : 0;
-        cost += costPrice * item.quantity;
-      });
-      const profit = revenue - cost;
-      return profit < 0 ? sum + Math.abs(profit) : sum;
+    const netSales = sales - refundAmount;
+
+    // Purchase = Total cost from purchases (stock in)
+    const purchase = accounts
+      .filter(a => a.transactionType === "purchase")
+      .reduce((sum, a) => {
+        return sum + parseFloat(a.cost.toString());
+      }, 0);
+
+    // Opening Stock = Total value of initial inventory (can be calculated from first movements or set manually)
+    // For now, we'll calculate it based on current stock minus net changes
+    const openingStock = products.reduce((sum, product) => {
+      const costPrice = product.costPrice ? parseFloat(product.costPrice.toString()) : 0;
+      // Get initial quantity (this is simplified - in real scenario, you'd track this separately)
+      const currentStock = product.stockQuantity;
+      
+      // Calculate net sales quantity for this product
+      const soldQty = orders.reduce((qty, order) => {
+        const item = order.items.find(i => i.productId === product.id);
+        return qty + (item ? item.quantity : 0);
+      }, 0);
+      
+      const returnedQty = returns.reduce((qty, ret) => {
+        const item = ret.items.find(i => i.productId === product.id);
+        return qty + (item ? item.quantity : 0);
+      }, 0);
+      
+      const purchasedQty = movements
+        .filter(m => m.productId === product.id && m.type === "in" && m.reason === "purchase")
+        .reduce((qty, m) => qty + m.quantity, 0);
+      
+      // Opening stock = Current stock - Purchase + Sales - Returns
+      const openingQty = currentStock - purchasedQty + soldQty - returnedQty;
+      return sum + (openingQty * costPrice);
     }, 0);
 
-    const totalProfit = purchaseProfit + salesProfit;
-    const totalLoss = purchaseLoss + salesLoss;
+    // Closing Stock = Current inventory value
+    const closingStock = products.reduce((sum, product) => {
+      const costPrice = product.costPrice ? parseFloat(product.costPrice.toString()) : 0;
+      return sum + (product.stockQuantity * costPrice);
+    }, 0);
+
+    // Verify: Closing Stock = Opening Stock + Purchase - Sales (in quantity terms)
+    // But we're using value here
+
+    // Direct expenses (additional costs like shipping, handling, etc.)
+    // For now, set to 0 as these aren't tracked separately
+    const directExpenses = 0;
+
+    // Formula: Gross Profit = Sales + Closing Stock - Opening Stock - Purchase - Direct Expenses
+    const grossProfit = netSales + closingStock - openingStock - purchase - directExpenses;
+    const grossProfitValue = grossProfit > 0 ? grossProfit : 0;
+    const grossLossValue = grossProfit < 0 ? Math.abs(grossProfit) : 0;
+
+    // Indirect income (placeholder - can be expanded)
+    const indirectIncome = 0;
+
+    // Indirect expenses (placeholder - can be expanded)
+    const indirectExpenses = 0;
+
+    // Formula: Net Profit = Gross Profit + Indirect Income - Indirect Expenses
+    const netProfit = grossProfit + indirectIncome - indirectExpenses;
+    const netProfitValue = netProfit > 0 ? netProfit : 0;
+    const netLossValue = netProfit < 0 ? Math.abs(netProfit) : 0;
+
+    const profitMargin = netSales > 0 ? (netProfit / netSales) * 100 : 0;
 
     const totalOrders = profitData.reduce((sum, d) => sum + d.orders, 0);
     const totalReturns = profitData.reduce((sum, d) => sum + d.returns, 0);
@@ -298,19 +331,23 @@ export default function ProfitLoss() {
     return {
       totalRevenue,
       totalCost,
-      netProfit,
+      sales: netSales,
+      purchase,
+      openingStock,
+      closingStock,
+      directExpenses,
+      grossProfit: grossProfitValue,
+      grossLoss: grossLossValue,
+      indirectIncome,
+      indirectExpenses,
+      netProfit: netProfitValue,
+      netLoss: netLossValue,
       profitMargin,
-      purchaseProfit,
-      purchaseLoss,
-      salesProfit,
-      salesLoss,
-      totalProfit,
-      totalLoss,
       totalOrders,
       totalReturns,
       returnRate,
     };
-  }, [profitData, accounts, products, productMap, orders]);
+  }, [profitData, accounts, productMap, orders, returns, products, movements]);
 
   // Product category breakdown
   const categoryBreakdown = useMemo(() => {
@@ -393,105 +430,99 @@ export default function ProfitLoss() {
       <div className="flex-1 overflow-auto bg-muted/30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           {/* Key Metrics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Purchase Profit</CardTitle>
-                <TrendingUp className="h-4 w-4 text-green-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-green-600" data-testid="stat-purchase-profit">
-                  ${statistics.purchaseProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  From inventory purchases
-                </p>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            {/* Column 1: Sales & Purchase */}
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Sales</CardTitle>
+                  <ShoppingCart className="h-4 w-4 text-blue-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-blue-600" data-testid="stat-sales">
+                    ${statistics.sales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    From {statistics.totalOrders} orders
+                  </p>
+                </CardContent>
+              </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Sales Profit</CardTitle>
-                <ShoppingCart className="h-4 w-4 text-green-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-green-600" data-testid="stat-sales-profit">
-                  ${statistics.salesProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  From {statistics.totalOrders} orders
-                </p>
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Purchase</CardTitle>
+                  <Package className="h-4 w-4 text-orange-600" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-orange-600" data-testid="stat-purchase">
+                    ${statistics.purchase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    From inventory purchases
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total Profit</CardTitle>
-                <DollarSign className="h-4 w-4 text-green-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-green-600" data-testid="stat-total-profit">
-                  ${statistics.totalProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Combined profit
-                </p>
-              </CardContent>
-            </Card>
+            {/* Column 2: Gross & Net Profit/Loss */}
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">
+                    {statistics.grossProfit > 0 ? "Gross Profit" : "Gross Loss"}
+                  </CardTitle>
+                  {statistics.grossProfit > 0 ? (
+                    <TrendingUp className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <TrendingDown className="h-4 w-4 text-red-600" />
+                  )}
+                </CardHeader>
+                <CardContent>
+                  <div 
+                    className={`text-2xl font-bold ${statistics.grossProfit > 0 ? 'text-green-600' : 'text-red-600'}`} 
+                    data-testid="stat-gross-profit"
+                  >
+                    ${(statistics.grossProfit > 0 ? statistics.grossProfit : statistics.grossLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Sales + Closing - Opening - Purchase
+                  </p>
+                </CardContent>
+              </Card>
 
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Purchase Loss</CardTitle>
-                <TrendingDown className="h-4 w-4 text-red-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-red-600" data-testid="stat-purchase-loss">
-                  ${statistics.purchaseLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  From inventory purchases
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Sales Loss</CardTitle>
-                <ShoppingCart className="h-4 w-4 text-red-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-red-600" data-testid="stat-sales-loss">
-                  ${statistics.salesLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  From {statistics.totalOrders} orders
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Total Loss</CardTitle>
-                <TrendingDown className="h-4 w-4 text-red-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-red-600" data-testid="stat-total-loss">
-                  ${statistics.totalLoss.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Combined loss
-                </p>
-              </CardContent>
-            </Card>
+              <Card>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">
+                    {statistics.netProfit > 0 ? "Net Profit" : "Net Loss"}
+                  </CardTitle>
+                  {statistics.netProfit > 0 ? (
+                    <DollarSign className="h-4 w-4 text-green-600" />
+                  ) : (
+                    <TrendingDown className="h-4 w-4 text-red-600" />
+                  )}
+                </CardHeader>
+                <CardContent>
+                  <div 
+                    className={`text-2xl font-bold ${statistics.netProfit > 0 ? 'text-green-600' : 'text-red-600'}`} 
+                    data-testid="stat-net-profit"
+                  >
+                    ${(statistics.netProfit > 0 ? statistics.netProfit : statistics.netLoss).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Gross Profit + Indirect Inc - Indirect Exp
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
           {/* Charts */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-            {/* Total Profit Line Chart */}
+            {/* Net Profit Line Chart */}
             <Card>
               <CardHeader>
-                <CardTitle>Total Profit</CardTitle>
-                <CardDescription>Total profit over time</CardDescription>
+                <CardTitle>Net Profit/Loss</CardTitle>
+                <CardDescription>Net profit over time</CardDescription>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -504,18 +535,18 @@ export default function ProfitLoss() {
                       <YAxis />
                       <ChartTooltip content={<ChartTooltipContent />} />
                       <Legend />
-                      <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} name="Total Profit" />
+                      <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} name="Net Profit" />
                     </LineChart>
                   </ChartContainer>
                 )}
               </CardContent>
             </Card>
 
-            {/* Total Loss and Total Sales Bar Chart */}
+            {/* Purchase and Sales Bar Chart */}
             <Card>
               <CardHeader>
-                <CardTitle>Total Loss and Total Sales</CardTitle>
-                <CardDescription>Loss and sales by period</CardDescription>
+                <CardTitle>Purchase and Sales</CardTitle>
+                <CardDescription>Purchase cost and sales revenue by period</CardDescription>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -528,8 +559,8 @@ export default function ProfitLoss() {
                       <YAxis />
                       <ChartTooltip content={<ChartTooltipContent />} />
                       <Legend />
-                      <Bar dataKey="cost" fill="#ef4444" name="Total Loss" />
-                      <Bar dataKey="revenue" fill="#3b82f6" name="Total Sales" />
+                      <Bar dataKey="cost" fill="#f97316" name="Purchase" />
+                      <Bar dataKey="revenue" fill="#3b82f6" name="Sales" />
                     </BarChart>
                   </ChartContainer>
                 )}
@@ -634,9 +665,33 @@ export default function ProfitLoss() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Net Profit/Loss</span>
-                  <span className={`font-semibold ${statistics.netProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    ${statistics.netProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <span className="text-sm text-muted-foreground">Sales (Revenue)</span>
+                  <span className="font-semibold text-blue-600">
+                    ${statistics.sales.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Purchase (Cost)</span>
+                  <span className="font-semibold text-orange-600">
+                    ${statistics.purchase.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Opening Stock</span>
+                  <span className="font-semibold text-purple-600">
+                    ${statistics.openingStock.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Closing Stock</span>
+                  <span className="font-semibold text-indigo-600">
+                    ${statistics.closingStock.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Direct Expenses</span>
+                  <span className="font-semibold text-red-600">
+                    ${statistics.directExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -656,11 +711,11 @@ export default function ProfitLoss() {
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Avg Order Value</span>
                   <span className="font-semibold">
-                    ${statistics.totalOrders > 0 ? (statistics.totalRevenue / statistics.totalOrders).toFixed(2) : '0.00'}
+                    ${statistics.totalOrders > 0 ? (statistics.sales / statistics.totalOrders).toFixed(2) : '0.00'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Gross Margin</span>
+                  <span className="text-sm text-muted-foreground">Net Margin</span>
                   <Badge variant="outline">
                     {statistics.profitMargin.toFixed(2)}%
                   </Badge>

@@ -160,3 +160,28 @@ export const accounts = sqliteTable("accounts", {
   transactionDate: integer("transaction_date", { mode: 'timestamp' }).default(sql`(strftime('%s', 'now'))`),
   createdAt: integer("created_at", { mode: 'timestamp' }).default(sql`(strftime('%s', 'now'))`),
 });
+
+export const insertAccountSchema = createInsertSchema(accounts, {
+  transactionType: z.enum(["sale", "purchase", "return", "refund", "adjustment", "direct_income"]),
+  revenue: z.string().min(1, "Revenue is required"),
+  cost: z.string().min(1, "Cost is required"),
+  profit: z.string().min(1, "Profit is required"),
+  taxAmount: z.string().transform(val => val === "" ? "0.00" : val).optional(),
+  discountAmount: z.string().transform(val => val === "" ? "0.00" : val).optional(),
+  shippingCost: z.string().transform(val => val === "" ? "0.00" : val).optional(),
+  fiscalYear: z.number().int().optional(),
+  fiscalMonth: z.number().int().min(1).max(12).optional(),
+  fiscalQuarter: z.number().int().min(1).max(4).optional(),
+  quantity: z.number().int().min(0).optional(),
+  referenceId: z.string().optional(),
+  referenceNumber: z.string().optional(),
+  productId: z.string().optional(),
+  productName: z.string().optional(),
+  category: z.string().optional(),
+  customerName: z.string().optional(),
+  customerEmail: z.string().email().optional().or(z.literal("")),
+  notes: z.string().transform(val => val === "" ? null : val).nullable().optional(),
+}).omit({ id: true, createdAt: true });
+
+export type InsertAccount = z.infer<typeof insertAccountSchema>;
+export type Account = typeof accounts.$inferSelect;
