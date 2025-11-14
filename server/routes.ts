@@ -432,17 +432,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Create discount code if there's a credit amount (return value > exchange value)
       // Parse credit amount - it can be null, undefined, or a string
-      const creditAmount = returnData.creditAmount && returnData.creditAmount !== "0" && returnData.creditAmount !== "" 
-        ? parseFloat(returnData.creditAmount) 
+      const creditAmount = returnData.creditAmount && returnData.creditAmount !== "0" && returnData.creditAmount !== ""
+        ? parseFloat(returnData.creditAmount)
         : 0;
-      
+
       console.log('Checking store credit creation:', {
         rawCreditAmount: returnData.creditAmount,
         parsedCreditAmount: creditAmount,
         hasEmail: !!returnData.customerEmail,
         shouldCreate: creditAmount > 0 && returnData.customerEmail
       });
-      
+
       if (creditAmount > 0 && returnData.customerEmail) {
         const code = `CREDIT-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
         const expiresAt = new Date();
@@ -574,11 +574,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: result.error });
       }
 
-      res.json({
-        success: true,
-        remainingCredit: result.updated,
-        fullyUsed: result.wasDeleted
-      });
+      if (result.wasDeleted) {
+        res.json({ success: true, fullyUsed: true, remainingCredit: null });
+      } else {
+        res.json({ success: true, fullyUsed: false, remainingCredit: result.updated });
+      }
     } catch (error) {
       res.status(500).json({ error: "Failed to use discount code" });
     }
@@ -603,6 +603,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(accountsData);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch accounts" });
+    }
+  });
+
+  app.post("/api/accounts", async (req, res) => {
+    try {
+      const accountData = {
+        ...req.body,
+        id: nanoid(),
+      };
+      
+      await db.insert(accounts).values(accountData);
+      const result = await db.select().from(accounts).where(eq(accounts.id, accountData.id));
+      res.status(201).json(result[0]);
+    } catch (error) {
+      console.error("Error creating account entry:", error);
+      res.status(500).json({ error: "Failed to create account entry" });
     }
   });
 

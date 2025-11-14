@@ -291,7 +291,7 @@ export const accounts = mysqlTable("accounts", {
 });
 
 export const insertAccountSchema = createInsertSchema(accounts, {
-  transactionType: z.enum(["sale", "purchase", "return", "refund", "adjustment"]),
+  transactionType: z.enum(["sale", "purchase", "return", "refund", "adjustment", "direct_income"]),
   revenue: z.string().min(1, "Revenue is required"),
   cost: z.string().min(1, "Cost is required"),
   profit: z.string().min(1, "Profit is required"),

@@ -106,36 +106,75 @@ export function UseCreditDialog({ open, onOpenChange, credit }: UseCreditDialogP
 
   const createMutation = useMutation({
     mutationFn: async (data: InsertOrder & { items: OrderItem[]; creditCode: string; amountUsed: string }) => {
-      return await apiRequest("POST", "/api/orders", data);
-    },
-    onSuccess: async (data, variables) => {
-      if (credit) {
-        try {
-          const response = await apiRequest("POST", `/api/discount-codes/${credit.code}/use`, {
-            amountUsed: variables.amountUsed,
-          }) as { success: boolean; remainingCredit: DiscountCode | null; fullyUsed: boolean };
+      // Create the order first
+      const order = await apiRequest("POST", "/api/orders", data) as OrderWithItems;
+      
+      // Then use the store credit
+      if (data.creditCode && data.amountUsed) {
+        await apiRequest("POST", `/api/discount-codes/${data.creditCode}/use`, {
+          amountUsed: data.amountUsed,
+        });
+        
+        // Record additional payment as direct income if applicable
+        const totalAmount = parseFloat(data.totalAmount);
+        const creditUsed = parseFloat(data.amountUsed);
+        const additionalPayment = totalAmount - creditUsed;
+        
+        if (additionalPayment > 0.01) {
+          const now = new Date();
+          const fiscalYear = now.getFullYear();
+          const fiscalMonth = now.getMonth() + 1;
+          const fiscalQuarter = Math.ceil(fiscalMonth / 3);
           
-          if (response.remainingCredit) {
-            toast({
-              title: "Success",
-              description: `Order created successfully. Remaining credit: $${response.remainingCredit.amount}`,
-            });
-          } else if (response.fullyUsed) {
-            toast({
-              title: "Success",
-              description: "Order created successfully. Store credit fully used.",
-            });
-          }
-        } catch (error) {
-          toast({
-            title: "Warning",
-            description: "Order created but failed to update store credit. Please check store credits page.",
-            variant: "destructive",
+          await apiRequest("POST", "/api/accounts", {
+            transactionType: "direct_income",
+            referenceId: order.id,
+            referenceNumber: order.orderNumber,
+            revenue: additionalPayment.toFixed(2),
+            cost: "0.00",
+            profit: additionalPayment.toFixed(2),
+            customerName: data.customerName,
+            customerEmail: data.customerEmail,
+            notes: `Additional payment on store credit order (Credit used: $${creditUsed.toFixed(2)})`,
+            fiscalYear,
+            fiscalMonth,
+            fiscalQuarter,
           });
         }
       }
+      
+      return order;
+    },
+    onSuccess: async (data, variables) => {
+      const creditUsed = parseFloat(variables.amountUsed);
+      const totalAmount = parseFloat(variables.totalAmount);
+      const additionalPayment = totalAmount - creditUsed;
+      
+      if (credit) {
+        const creditRemaining = parseFloat(credit.amount) - creditUsed;
+        if (creditRemaining > 0.01) {
+          toast({
+            title: "Success",
+            description: `Order created successfully. Remaining credit: $${creditRemaining.toFixed(2)}`,
+          });
+        } else {
+          toast({
+            title: "Success",
+            description: "Order created successfully. Store credit fully used.",
+          });
+        }
+        
+        if (additionalPayment > 0.01) {
+          toast({
+            title: "Additional Payment Recorded",
+            description: `Additional payment of $${additionalPayment.toFixed(2)} recorded as direct income.`,
+          });
+        }
+      }
+      
       queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
       queryClient.invalidateQueries({ queryKey: ["/api/discount-codes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/accounts"] });
       onOpenChange(false);
       form.reset();
       setOrderItems([]);
