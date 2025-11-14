@@ -62,33 +62,52 @@ export default function StockHistory() {
 
   // Calculate overall statistics
   const statistics = useMemo(() => {
-    const totalSold = movements
-      .filter(m => m.type === "out" && m.reason === "sale")
+    // Calculate from stock movements
+    const totalPurchasedFromMovements = movements
+      .filter(m => m.type === "in" && (m.reason === "Purchase" || m.reason === "purchase"))
       .reduce((sum, m) => sum + m.quantity, 0);
 
-    const totalReturned = movements
-      .filter(m => m.type === "in" && m.reason === "return")
+    const totalReturnedFromMovements = movements
+      .filter(m => m.type === "in" && (m.reason === "Return" || m.reason === "return"))
       .reduce((sum, m) => sum + m.quantity, 0);
 
-    const totalPurchased = movements
-      .filter(m => m.type === "in" && m.reason === "purchase")
+    const totalSoldFromMovements = movements
+      .filter(m => m.type === "out" && (m.reason === "Sale" || m.reason === "sale"))
       .reduce((sum, m) => sum + m.quantity, 0);
+
+    // Calculate from orders
+    const totalSoldFromOrders = orders.reduce((sum, order) => {
+      if (order.items && Array.isArray(order.items)) {
+        return sum + order.items.reduce((itemSum: number, item: any) => itemSum + item.quantity, 0);
+      }
+      return sum;
+    }, 0);
+
+    // Calculate from returns
+    const totalReturnedFromReturns = returns.reduce((sum, ret) => {
+      if (ret.items && Array.isArray(ret.items)) {
+        return sum + ret.items.reduce((itemSum: number, item: any) => itemSum + item.quantity, 0);
+      }
+      return sum;
+    }, 0);
 
     const totalAvailable = products.reduce((sum, p) => sum + p.stockQuantity, 0);
+    const totalSold = totalSoldFromMovements + totalSoldFromOrders;
+    const totalReturned = totalReturnedFromMovements + totalReturnedFromReturns;
 
     return {
       available: totalAvailable,
       sold: totalSold,
       returned: totalReturned,
-      purchased: totalPurchased,
+      purchased: totalPurchasedFromMovements,
     };
-  }, [movements, products]);
+  }, [movements, products, orders, returns]);
 
   // Calculate per-product stock statistics
   const stockStats = useMemo(() => {
     const statsMap = new Map<string, StockStats>();
 
-    // Initialize with product stock quantities
+    // Initialize with zeros
     products.forEach(p => {
       statsMap.set(p.id, {
         productId: p.id,
@@ -99,32 +118,58 @@ export default function StockHistory() {
       });
     });
 
-    // Process stock movements
+    // Process stock movements to calculate sold, returned, and purchased
     movements.forEach(m => {
-      const currentStats = statsMap.get(m.productId) || { productId: m.productId, available: 0, sold: 0, returned: 0, purchased: 0 };
+      const currentStats = statsMap.get(m.productId);
+      if (!currentStats) return;
 
       switch (m.type) {
         case "in":
-          if (m.reason === "purchase") {
+          if (m.reason === "Purchase" || m.reason === "purchase") {
             currentStats.purchased += m.quantity;
-            currentStats.available += m.quantity;
-          } else if (m.reason === "return") {
+          } else if (m.reason === "Return" || m.reason === "return") {
             currentStats.returned += m.quantity;
-            currentStats.available += m.quantity;
           }
           break;
         case "out":
-          if (m.reason === "sale") {
+          if (m.reason === "Sale" || m.reason === "sale") {
             currentStats.sold += m.quantity;
-            currentStats.available -= m.quantity;
           }
           break;
       }
-      statsMap.set(m.productId, currentStats);
+    });
+
+    // Process orders to count sold items
+    orders.forEach(order => {
+      if (order.items && Array.isArray(order.items)) {
+        order.items.forEach((item: any) => {
+          const stats = statsMap.get(item.productId);
+          if (stats) {
+            stats.sold += item.quantity;
+          }
+        });
+      }
+    });
+
+    // Process returns to count returned items
+    returns.forEach(ret => {
+      if (ret.items && Array.isArray(ret.items)) {
+        ret.items.forEach((item: any) => {
+          const stats = statsMap.get(item.productId);
+          if (stats) {
+            stats.returned += item.quantity;
+          }
+        });
+      }
+    });
+
+    // Update available to match formula: available = purchased + returned - sold
+    Array.from(statsMap.values()).forEach(stats => {
+      stats.available = stats.purchased + stats.returned - stats.sold;
     });
 
     return Array.from(statsMap.values());
-  }, [products, movements]);
+  }, [products, movements, orders, returns]);
 
 
   // Prepare product data for the table using stock stats
@@ -133,13 +178,18 @@ export default function StockHistory() {
       const stats = stockStats.find(s => s.productId === product.id);
       return {
         ...product,
-        available: stats?.available || product.stockQuantity,
+        available: stats?.available || 0,
         sold: stats?.sold || 0,
         returned: stats?.returned || 0,
         purchased: stats?.purchased || 0,
       };
     });
   }, [products, stockStats]);
+
+  // Prepare purchased stock data for separate table
+  const purchasedStockData = useMemo(() => {
+    return productStockData.filter(p => p.purchased > 0);
+  }, [productStockData]);
 
   // Get unique categories
   const categories = useMemo(() => {
@@ -477,22 +527,12 @@ export default function StockHistory() {
                           <SortIcon field="returned" />
                         </Button>
                       </TableHead>
-                      <TableHead className="text-right">
-                        <Button
-                          variant="ghost"
-                          onClick={() => handleSort("purchased")}
-                          className="hover:bg-transparent p-0 h-auto font-medium ml-auto flex"
-                        >
-                          Purchased
-                          <SortIcon field="purchased" />
-                        </Button>
-                      </TableHead>
-                    </TableRow>
+                      </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredAndSortedProducts.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                           No products found
                         </TableCell>
                       </TableRow>
@@ -521,8 +561,51 @@ export default function StockHistory() {
                           <TableCell className="text-right">
                             <span className="text-blue-600 font-semibold">{product.returned}</span>
                           </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Purchased Stock Table */}
+          <Card className="mb-8">
+            <CardHeader>
+              <CardTitle>Purchased Stock</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Track all stock added through purchases
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Product Name</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead className="text-right">Purchased Quantity</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {purchasedStockData.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
+                          No purchased stock records
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      purchasedStockData.map((product) => (
+                        <TableRow key={product.id}>
+                          <TableCell className="font-medium">{product.productName}</TableCell>
+                          <TableCell className="font-mono text-sm">{product.sku}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{product.category}</Badge>
+                          </TableCell>
                           <TableCell className="text-right">
-                            <span className="text-purple-600 font-semibold">{product.purchased || 0}</span>
+                            <span className="text-purple-600 font-semibold">{product.purchased}</span>
                           </TableCell>
                         </TableRow>
                       ))

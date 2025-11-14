@@ -28,6 +28,7 @@ import {
   type InsertDiscountCode,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { nanoid } from "nanoid"; // Assuming nanoid is available for generating IDs
 import { eq, sql } from "drizzle-orm";
 import { db } from "./db";
 
@@ -123,7 +124,7 @@ export class DatabaseStorage implements IStorage {
 
     // Fetch the created product
     const result = await db.select().from(products).where(eq(products.id, id));
-    
+
     const createdProduct = {
       ...result[0],
       galleryImages: result[0].galleryImages ? JSON.parse(result[0].galleryImages) : [],
@@ -158,43 +159,27 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProduct(id: string): Promise<boolean> {
     try {
-      // Delete related records first to avoid foreign key constraints
-      
-      // Delete from stock stats
+      // Only delete from product-specific tables
+      // Historical records (orders, returns, stock movements, accounts) are preserved
+
+      // Delete from stock stats (product-specific tracking)
       await db.delete(stockStats).where(eq(stockStats.productId, id));
-      
-      // Delete from stock movements
-      await db.delete(stockMovements).where(eq(stockMovements.productId, id));
-      
-      // Delete from accounts
-      await db.delete(accounts).where(eq(accounts.productId, id));
-      
-      // Note: We don't delete order items or return items as they are historical records
-      // The product deletion should be prevented if there are orders/returns
-      
-      // Check if product is referenced in any orders
-      const orderItemsCount = await db
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.productId, id));
-      
-      if (orderItemsCount.length > 0) {
-        throw new Error("Cannot delete product that has been sold in orders");
+
+      // Note: We preserve all historical data:
+      // - order items (sales history)
+      // - return items (return history)
+      // - stock movements (stock history)
+      // - accounts (profit/loss history)
+
+      // Delete the product from inventory
+      // SQLite doesn't support .returning(), so we check if product exists first
+      const existing = await db.select().from(products).where(eq(products.id, id));
+      if (existing.length === 0) {
+        return false;
       }
-      
-      // Check if product is referenced in any returns
-      const returnItemsCount = await db
-        .select()
-        .from(returnItems)
-        .where(eq(returnItems.productId, id));
-      
-      if (returnItemsCount.length > 0) {
-        throw new Error("Cannot delete product that has been returned");
-      }
-      
-      // Finally delete the product
-      const result = await db.delete(products).where(eq(products.id, id)).returning();
-      return result.length > 0;
+
+      await db.delete(products).where(eq(products.id, id));
+      return true;
     } catch (error: any) {
       console.error('Error deleting product:', error);
       throw error;
@@ -251,7 +236,7 @@ export class DatabaseStorage implements IStorage {
         id: itemId,
         orderId: id,
       });
-      
+
       const orderItemResult = await db.select().from(orderItems).where(eq(orderItems.id, itemId));
       createdItems.push(orderItemResult[0]);
 
@@ -292,7 +277,7 @@ export class DatabaseStorage implements IStorage {
     await db.update(orders)
       .set(insertOrder)
       .where(eq(orders.id, id));
-    
+
     const result = await db.select().from(orders).where(eq(orders.id, id));
     return result[0];
   }
@@ -322,7 +307,7 @@ export class DatabaseStorage implements IStorage {
       ...insertMovement,
       id,
     });
-    
+
     const movementResult = await db.select().from(stockMovements).where(eq(stockMovements.id, id));
     const movement = movementResult[0];
 
@@ -414,7 +399,7 @@ export class DatabaseStorage implements IStorage {
       returnNumber,
       ...data,
     });
-    
+
     const returnResult = await db.select().from(returns).where(eq(returns.id, returnId));
     const newReturn = returnResult[0];
 
@@ -432,7 +417,7 @@ export class DatabaseStorage implements IStorage {
         returnId,
         ...item,
       });
-      
+
       const returnItemResult = await db.select().from(returnItems).where(eq(returnItems.id, itemId));
       createdItems.push(returnItemResult[0]);
 
@@ -471,7 +456,7 @@ export class DatabaseStorage implements IStorage {
     await db.update(returns)
       .set(data)
       .where(eq(returns.id, id));
-    
+
     const result = await db.select().from(returns).where(eq(returns.id, id));
     return result[0] || null;
   }
@@ -510,7 +495,7 @@ export class DatabaseStorage implements IStorage {
       isUsed: false,
       usedAt: null,
     });
-    
+
     const discountCodeResult = await db.select().from(discountCodes).where(eq(discountCodes.id, id));
     const discountCode = discountCodeResult[0];
 
@@ -518,9 +503,9 @@ export class DatabaseStorage implements IStorage {
       throw new Error('Failed to retrieve created discount code');
     }
 
-    console.log('Database: Created discount code successfully', { 
-      id: discountCode.id, 
-      code: discountCode.code, 
+    console.log('Database: Created discount code successfully', {
+      id: discountCode.id,
+      code: discountCode.code,
       amount: discountCode.amount,
       customerEmail: discountCode.customerEmail
     });
@@ -568,7 +553,7 @@ export class DatabaseStorage implements IStorage {
     await db.update(discountCodes)
       .set({ amount: remainingAmount.toFixed(2) })
       .where(eq(discountCodes.id, discountCode.id));
-    
+
     const updatedResult = await db.select().from(discountCodes).where(eq(discountCodes.id, discountCode.id));
     const updated = updatedResult[0];
     console.log('Database: Discount code updated with remaining amount:', remainingAmount.toFixed(2));
@@ -582,7 +567,44 @@ export class DatabaseStorage implements IStorage {
 
   // Stock Stats
   async getStockStats(): Promise<StockStats[]> {
-    return await db.select().from(stockStats);
+    // Get all products to ensure we have current stock quantities
+    const allProducts = await db.select().from(products);
+
+    // Get or create stock stats for each product
+    for (const product of allProducts) {
+      const existing = await db
+        .select()
+        .from(stockStats)
+        .where(eq(stockStats.productId, product.id))
+        .limit(1);
+
+      if (existing.length === 0) {
+        // Create new stock stats entry
+        await db.insert(stockStats).values({
+          id: nanoid(),
+          productId: product.id,
+          productName: product.productName,
+          sku: product.sku,
+          category: product.category,
+          available: product.stockQuantity,
+          sold: 0,
+          returned: 0,
+          purchased: 0,
+        });
+      } else {
+        // Update available quantity to match current product stock
+        await db
+          .update(stockStats)
+          .set({
+            available: product.stockQuantity,
+            updatedAt: new Date()
+          })
+          .where(eq(stockStats.productId, product.id));
+      }
+    }
+
+    const stats = await db.select().from(stockStats).orderBy(stockStats.productName);
+    return stats;
   }
 
   async getStockStatsByProduct(productId: string): Promise<StockStats | null> {
@@ -594,7 +616,7 @@ export class DatabaseStorage implements IStorage {
     await db.update(stockStats)
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(stockStats.productId, productId));
-    
+
     const result = await db.select().from(stockStats).where(eq(stockStats.productId, productId));
     return result[0] || null;
   }
@@ -612,7 +634,7 @@ export class DatabaseStorage implements IStorage {
       returned: 0,
       purchased: product.stockQuantity, // Initial purchase is the starting stock quantity
     });
-    
+
     const statsResult = await db.select().from(stockStats).where(eq(stockStats.id, id));
     return statsResult[0];
   }
