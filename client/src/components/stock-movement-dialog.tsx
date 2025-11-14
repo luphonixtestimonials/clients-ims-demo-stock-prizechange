@@ -22,7 +22,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertStockMovementSchema, type Product, type InsertStockMovement } from "@shared/schema";
@@ -34,17 +33,8 @@ interface StockMovementDialogProps {
   product?: Product | null;
 }
 
-const extendedStockMovementSchema = insertStockMovementSchema.extend({
-  priceOption: z.enum(["same", "new"]).optional(),
-  newSellingPrice: z.string().optional(),
-  newCostPrice: z.string().optional(),
-});
-
-type ExtendedStockMovement = z.infer<typeof extendedStockMovementSchema>;
-
 export function StockMovementDialog({ open, onOpenChange, product }: StockMovementDialogProps) {
   const [selectedProductId, setSelectedProductId] = useState<string>("");
-  const [priceOption, setPriceOption] = useState<"same" | "new">("same");
   const { toast } = useToast();
 
   // Auto-select scanned product
@@ -55,8 +45,8 @@ export function StockMovementDialog({ open, onOpenChange, product }: StockMoveme
     }
   }, [product, open]);
 
-  const form = useForm<ExtendedStockMovement>({
-    resolver: zodResolver(extendedStockMovementSchema),
+  const form = useForm<InsertStockMovement>({
+    resolver: zodResolver(insertStockMovementSchema),
     defaultValues: {
       productId: product?.id || "",
       productName: product?.productName || "",
@@ -65,27 +55,22 @@ export function StockMovementDialog({ open, onOpenChange, product }: StockMoveme
       quantity: 1,
       reason: "",
       notes: "",
-      priceOption: "same",
-      newSellingPrice: "",
-      newCostPrice: "",
     },
   });
 
   const createMutation = useMutation({
-    mutationFn: async (data: ExtendedStockMovement) => {
+    mutationFn: async (data: InsertStockMovement) => {
       return await apiRequest("POST", "/api/stock-movements", data);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements/low-stock"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/stock-movements"] });
       toast({
         title: "Success",
         description: "Stock movement recorded successfully",
       });
       onOpenChange(false);
       form.reset();
-      setPriceOption("same");
     },
     onError: () => {
       toast({
@@ -96,26 +81,7 @@ export function StockMovementDialog({ open, onOpenChange, product }: StockMoveme
     },
   });
 
-  const onSubmit = (data: ExtendedStockMovement) => {
-    // Validate new price fields if "new" price option is selected
-    if (data.priceOption === "new" && data.type === "in" && (data.reason === "Purchase" || data.reason === "purchase")) {
-      if (!data.newSellingPrice || parseFloat(data.newSellingPrice) <= 0) {
-        toast({
-          title: "Validation Error",
-          description: "Please enter a valid selling price",
-          variant: "destructive",
-        });
-        return;
-      }
-      if (!data.newCostPrice || parseFloat(data.newCostPrice) <= 0) {
-        toast({
-          title: "Validation Error",
-          description: "Please enter a valid cost price",
-          variant: "destructive",
-        });
-        return;
-      }
-    }
+  const onSubmit = (data: InsertStockMovement) => {
     createMutation.mutate(data);
   };
 
@@ -255,92 +221,6 @@ export function StockMovementDialog({ open, onOpenChange, product }: StockMoveme
               <p className="text-sm text-destructive">{form.formState.errors.reason.message}</p>
             )}
           </div>
-
-          {movementType === "in" && (form.watch("reason") === "Purchase" || form.watch("reason") === "purchase") && (
-            <>
-              <div className="space-y-3 border rounded-lg p-4 bg-muted/30">
-                <Label>Price Option *</Label>
-                <RadioGroup
-                  value={priceOption}
-                  onValueChange={(value) => {
-                    setPriceOption(value as "same" | "new");
-                    form.setValue("priceOption", value as "same" | "new");
-                  }}
-                >
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="same" id="same-price" />
-                    <Label htmlFor="same-price" className="font-normal cursor-pointer">
-                      Same Price (Keep current product pricing)
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <RadioGroupItem value="new" id="new-price" />
-                    <Label htmlFor="new-price" className="font-normal cursor-pointer">
-                      New Price (Update product pricing)
-                    </Label>
-                  </div>
-                </RadioGroup>
-              </div>
-
-              {priceOption === "new" && (
-                <div className="space-y-4 border rounded-lg p-4 bg-blue-50/50 dark:bg-blue-950/20">
-                  <p className="text-sm text-muted-foreground">
-                    Enter new pricing details. This will update the product's selling and cost prices.
-                  </p>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="newSellingPrice">New Selling Price *</Label>
-                      <Input
-                        id="newSellingPrice"
-                        {...form.register("newSellingPrice")}
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="0.00"
-                        data-testid="input-new-selling-price"
-                      />
-                      {form.formState.errors.newSellingPrice && (
-                        <p className="text-sm text-destructive">{form.formState.errors.newSellingPrice.message}</p>
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="newCostPrice">New Cost Price *</Label>
-                      <Input
-                        id="newCostPrice"
-                        {...form.register("newCostPrice")}
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="0.00"
-                        data-testid="input-new-cost-price"
-                      />
-                      {form.formState.errors.newCostPrice && (
-                        <p className="text-sm text-destructive">{form.formState.errors.newCostPrice.message}</p>
-                      )}
-                    </div>
-                  </div>
-                  {form.watch("newSellingPrice") && form.watch("newCostPrice") && (
-                    <div className="text-sm space-y-1">
-                      <p className={`font-semibold ${
-                        parseFloat(form.watch("newSellingPrice") || "0") > parseFloat(form.watch("newCostPrice") || "0")
-                          ? "text-green-600"
-                          : parseFloat(form.watch("newSellingPrice") || "0") < parseFloat(form.watch("newCostPrice") || "0")
-                          ? "text-red-600"
-                          : "text-gray-600"
-                      }`}>
-                        {parseFloat(form.watch("newSellingPrice") || "0") > parseFloat(form.watch("newCostPrice") || "0")
-                          ? `Potential Profit: $${(parseFloat(form.watch("newSellingPrice") || "0") - parseFloat(form.watch("newCostPrice") || "0")).toFixed(2)} per unit`
-                          : parseFloat(form.watch("newSellingPrice") || "0") < parseFloat(form.watch("newCostPrice") || "0")
-                          ? `Potential Loss: $${(parseFloat(form.watch("newCostPrice") || "0") - parseFloat(form.watch("newSellingPrice") || "0")).toFixed(2)} per unit`
-                          : "Break-even pricing"
-                        }
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
 
           <div className="space-y-2">
             <Label htmlFor="notes">Notes (Optional)</Label>

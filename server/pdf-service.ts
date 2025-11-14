@@ -5,15 +5,15 @@ import type { OrderWithItems, ReturnWithItems } from '@shared/schema';
 export class PDFService {
   private addStoreHeader(doc: PDFDocument) {
     // Store name and logo placeholder
-    doc.fontSize(24).font('Helvetica-Bold').text('YOUR STORE NAME', { align: 'center' });
+    doc.fontSize(24).font('Helvetica-Bold').text('FABRIX', { align: 'center' });
     doc.moveDown(0.3);
     
     // Store details
     doc.fontSize(10).font('Helvetica');
-    doc.text('123 Main Street, City Name, State - 123456', { align: 'center' });
-    doc.text('Phone: +91 98765 43210 | WhatsApp: +91 98765 43210', { align: 'center' });
-    doc.text('Email: store@example.com | Website: www.yourstore.com', { align: 'center' });
-    doc.text('GSTIN: 22AAAAA0000A1Z5', { align: 'center' });
+    doc.text('SUPER MALL-2, FF/152, Infocity, Gandhinagar, Gujarat 382007', { align: 'center' });
+    doc.text('Phone: +91 99245 55721 | WhatsApp: +91 80003 55721', { align: 'center' });
+    //doc.text('Email: store@example.com | Website: www.yourstore.com', { align: 'center' });
+    //doc.text('GSTIN: 22AAAAA0000A1Z5', { align: 'center' });
     doc.moveDown(0.5);
     
     // Divider line
@@ -46,7 +46,7 @@ export class PDFService {
     doc.fontSize(12).font('Helvetica-Bold').text('Thank you for shopping with us!', { align: 'center' });
     doc.fontSize(10).font('Helvetica').text('Visit us again soon!', { align: 'center' });
     doc.moveDown(0.5);
-    doc.fontSize(8).text('Follow us on Instagram & Facebook: @yourstore', { align: 'center' });
+    //doc.fontSize(8).text('Follow us on Instagram & Facebook: @yourstore', { align: 'center' });
   }
 
   async generateReturnInvoice(returnData: ReturnWithItems, order: OrderWithItems): Promise<Buffer> {
