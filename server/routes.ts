@@ -26,6 +26,7 @@ import { fromZodError } from "zod-validation-error";
 import { nanoid } from "nanoid";
 import { log } from "./log";
 import { db } from "./db";
+import { eq } from "drizzle-orm";
 import { emailService } from "./email-service";
 
 // Configure multer for file uploads (in-memory storage)
@@ -131,11 +132,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/products", async (req, res) => {
     try {
+      // Log the incoming request data
+      console.log('Creating product with data:', JSON.stringify(req.body, null, 2));
+      
       const parsed = insertProductSchema.safeParse(req.body);
       if (!parsed.success) {
         const error = fromZodError(parsed.error);
+        console.error('Validation error:', error.message);
         return res.status(400).json({ error: error.message });
       }
+
+      console.log('Parsed product data:', JSON.stringify(parsed.data, null, 2));
 
       // Check if SKU already exists
       const existing = await storage.getProductBySKU(parsed.data.sku);

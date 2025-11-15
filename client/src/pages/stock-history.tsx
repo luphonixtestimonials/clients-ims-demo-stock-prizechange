@@ -25,7 +25,7 @@ import { StockMovementDialog } from "@/components/stock-movement-dialog";
 import type { StockMovement, Product } from "@shared/schema";
 import { format } from "date-fns";
 
-type SortField = "productName" | "sku" | "category" | "available" | "sold" | "returned" | "purchased";
+type SortField = "productName" | "sku" | "category" | "available" | "sold" | "returned" | "purchased" | "initialStock";
 type SortOrder = "asc" | "desc";
 
 interface StockStats {
@@ -34,6 +34,7 @@ interface StockStats {
   sold: number;
   returned: number;
   purchased: number;
+  initialStock: number;
 }
 
 export default function StockHistory() {
@@ -62,9 +63,12 @@ export default function StockHistory() {
 
   // Calculate overall statistics
   const statistics = useMemo(() => {
-    // Calculate from stock movements
+    // Calculate from stock movements (excluding initial stock)
     const totalPurchasedFromMovements = movements
-      .filter(m => m.type === "in" && (m.reason === "Purchase" || m.reason === "purchase"))
+      .filter(m => {
+        const reasonLower = m.reason.toLowerCase();
+        return m.type === "in" && reasonLower === "purchase";
+      })
       .reduce((sum, m) => sum + m.quantity, 0);
 
     const totalReturnedFromMovements = movements
@@ -115,24 +119,28 @@ export default function StockHistory() {
         sold: 0,
         returned: 0,
         purchased: 0,
+        initialStock: 0,
       });
     });
 
-    // Process stock movements to calculate sold, returned, and purchased
+    // Process stock movements to calculate initial stock, sold, returned, and purchased
     movements.forEach(m => {
       const currentStats = statsMap.get(m.productId);
       if (!currentStats) return;
+      const reasonLower = m.reason.toLowerCase();
 
       switch (m.type) {
         case "in":
-          if (m.reason === "Purchase" || m.reason === "purchase") {
+          if (reasonLower === "initial stock") {
+            currentStats.initialStock += m.quantity;
+          } else if (reasonLower === "purchase") {
             currentStats.purchased += m.quantity;
-          } else if (m.reason === "Return" || m.reason === "return") {
+          } else if (reasonLower === "return") {
             currentStats.returned += m.quantity;
           }
           break;
         case "out":
-          if (m.reason === "Sale" || m.reason === "sale") {
+          if (reasonLower === "sale") {
             currentStats.sold += m.quantity;
           }
           break;
@@ -163,9 +171,9 @@ export default function StockHistory() {
       }
     });
 
-    // Update available to match formula: available = purchased + returned - sold
+    // Update available to match formula: available = initialStock + purchased + returned - sold
     Array.from(statsMap.values()).forEach(stats => {
-      stats.available = stats.purchased + stats.returned - stats.sold;
+      stats.available = stats.initialStock + stats.purchased + stats.returned - stats.sold;
     });
 
     return Array.from(statsMap.values());
@@ -182,6 +190,7 @@ export default function StockHistory() {
         sold: stats?.sold || 0,
         returned: stats?.returned || 0,
         purchased: stats?.purchased || 0,
+        initialStock: stats?.initialStock || 0,
       };
     });
   }, [products, stockStats]);
@@ -503,8 +512,28 @@ export default function StockHistory() {
                           onClick={() => handleSort("available")}
                           className="hover:bg-transparent p-0 h-auto font-medium ml-auto flex"
                         >
-                          Available
+                          Available Stock
                           <SortIcon field="available" />
+                        </Button>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <Button
+                          variant="ghost"
+                          onClick={() => handleSort("initialStock")}
+                          className="hover:bg-transparent p-0 h-auto font-medium ml-auto flex"
+                        >
+                          Initial Stock
+                          <SortIcon field="initialStock" />
+                        </Button>
+                      </TableHead>
+                      <TableHead className="text-right">
+                        <Button
+                          variant="ghost"
+                          onClick={() => handleSort("purchased")}
+                          className="hover:bg-transparent p-0 h-auto font-medium ml-auto flex"
+                        >
+                          Purchased
+                          <SortIcon field="purchased" />
                         </Button>
                       </TableHead>
                       <TableHead className="text-right">
@@ -532,7 +561,7 @@ export default function StockHistory() {
                   <TableBody>
                     {filteredAndSortedProducts.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                        <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                           No products found
                         </TableCell>
                       </TableRow>
@@ -545,67 +574,19 @@ export default function StockHistory() {
                             <Badge variant="outline">{product.category}</Badge>
                           </TableCell>
                           <TableCell className="text-right">
-                            <span className={`font-semibold ${
-                              product.available === 0
-                                ? "text-red-600"
-                                : product.available < 10
-                                ? "text-yellow-600"
-                                : "text-green-600"
-                            }`}>
-                              {product.available}
-                            </span>
+                            <span className="text-gray-800 dark:text-gray-200 font-bold">{product.available}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-purple-600 font-semibold">{product.initialStock}</span>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <span className="text-green-600 font-semibold">{product.purchased}</span>
                           </TableCell>
                           <TableCell className="text-right">
                             <span className="text-red-600 font-semibold">{product.sold}</span>
                           </TableCell>
                           <TableCell className="text-right">
                             <span className="text-blue-600 font-semibold">{product.returned}</span>
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Purchased Stock Table */}
-          <Card className="mb-8">
-            <CardHeader>
-              <CardTitle>Purchased Stock</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Track all stock added through purchases
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Product Name</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Category</TableHead>
-                      <TableHead className="text-right">Purchased Quantity</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {purchasedStockData.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
-                          No purchased stock records
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      purchasedStockData.map((product) => (
-                        <TableRow key={product.id}>
-                          <TableCell className="font-medium">{product.productName}</TableCell>
-                          <TableCell className="font-mono text-sm">{product.sku}</TableCell>
-                          <TableCell>
-                            <Badge variant="outline">{product.category}</Badge>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <span className="text-purple-600 font-semibold">{product.purchased}</span>
                           </TableCell>
                         </TableRow>
                       ))

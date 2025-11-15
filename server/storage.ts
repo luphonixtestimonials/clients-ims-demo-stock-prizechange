@@ -1,3 +1,4 @@
+
 import {
   products,
   orders,
@@ -8,27 +9,29 @@ import {
   returnItems,
   discountCodes,
   accounts,
-  type Product,
-  type InsertProduct,
-  type Order,
-  type InsertOrder,
-  type OrderItem,
-  type InsertOrderItem,
-  type OrderWithItems,
-  type StockMovement,
-  type InsertStockMovement,
-  type StockStats,
-  type InsertStockStats,
-  type Return,
-  type InsertReturn,
-  type ReturnItem,
-  type InsertReturnItem,
-  type ReturnWithItems,
-  type DiscountCode,
-  type InsertDiscountCode,
-} from "@shared/schema";
+} from "@shared/schema.mysql";
+import type {
+  Product,
+  InsertProduct,
+  Order,
+  InsertOrder,
+  OrderItem,
+  InsertOrderItem,
+  OrderWithItems,
+  StockMovement,
+  InsertStockMovement,
+  StockStats,
+  InsertStockStats,
+  Return,
+  InsertReturn,
+  ReturnItem,
+  InsertReturnItem,
+  ReturnWithItems,
+  DiscountCode,
+  InsertDiscountCode,
+} from "@shared/schema.mysql";
 import { randomUUID } from "crypto";
-import { nanoid } from "nanoid"; // Assuming nanoid is available for generating IDs
+import { nanoid } from "nanoid";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./db";
 
@@ -111,38 +114,61 @@ export class DatabaseStorage implements IStorage {
 
   async createProduct(insertProduct: InsertProduct): Promise<Product> {
     const id = randomUUID();
-    const productData = {
-      ...insertProduct,
+    
+    const productData: any = {
+      id,
       galleryImages: insertProduct.galleryImages ? JSON.stringify(insertProduct.galleryImages) : null,
       tags: insertProduct.tags ? JSON.stringify(insertProduct.tags) : null,
     };
-
-    await db.insert(products).values({
-      ...productData,
-      id,
+    
+    Object.keys(insertProduct).forEach(key => {
+      const value = (insertProduct as any)[key];
+      if (value !== undefined && key !== 'galleryImages' && key !== 'tags') {
+        productData[key] = value;
+      }
     });
+    
+    console.log('Product data to insert:', JSON.stringify(productData, null, 2));
+    
+    await db.insert(products).values(productData);
 
-    // Fetch the created product
-    const result = await db.select().from(products).where(eq(products.id, id));
+    const productResult = await db.select().from(products).where(eq(products.id, id));
+    const product = productResult[0];
 
-    const createdProduct = {
-      ...result[0],
-      galleryImages: result[0].galleryImages ? JSON.parse(result[0].galleryImages) : [],
-      tags: result[0].tags ? JSON.parse(result[0].tags) : [],
+    await this.initializeStockStats(product);
+
+    if (product.stockQuantity > 0) {
+      await db.insert(stockMovements).values({
+        id: randomUUID(),
+        productId: product.id,
+        productName: product.productName,
+        sku: product.sku,
+        type: "in",
+        quantity: product.stockQuantity,
+        reason: "Initial Stock",
+        notes: "Initial stock added during product creation",
+      });
+    }
+
+    return {
+      ...product,
+      galleryImages: product.galleryImages ? JSON.parse(product.galleryImages) : [],
+      tags: product.tags ? JSON.parse(product.tags) : [],
     };
-
-    // Initialize stock stats for new product
-    await this.initializeStockStats(createdProduct);
-
-    return createdProduct;
   }
 
   async updateProduct(id: string, product: InsertProduct): Promise<Product | undefined> {
-    const productData = {
-      ...product,
+    const productData: any = {
       galleryImages: product.galleryImages ? JSON.stringify(product.galleryImages) : null,
       tags: product.tags ? JSON.stringify(product.tags) : null,
     };
+    
+    Object.keys(product).forEach(key => {
+      const value = (product as any)[key];
+      if (value !== undefined && key !== 'galleryImages' && key !== 'tags') {
+        productData[key] = value;
+      }
+    });
 
     await db.update(products)
       .set(productData)
@@ -159,25 +185,7 @@ export class DatabaseStorage implements IStorage {
 
   async deleteProduct(id: string): Promise<boolean> {
     try {
-      // Only delete from product-specific tables
-      // Historical records (orders, returns, stock movements, accounts) are preserved
-
-      // Delete from stock stats (product-specific tracking)
       await db.delete(stockStats).where(eq(stockStats.productId, id));
-
-      // Note: We preserve all historical data:
-      // - order items (sales history)
-      // - return items (return history)
-      // - stock movements (stock history)
-      // - accounts (profit/loss history)
-
-      // Delete the product from inventory
-      // SQLite doesn't support .returning(), so we check if product exists first
-      const existing = await db.select().from(products).where(eq(products.id, id));
-      if (existing.length === 0) {
-        return false;
-      }
-
       await db.delete(products).where(eq(products.id, id));
       return true;
     } catch (error: any) {
@@ -246,9 +254,9 @@ export class DatabaseStorage implements IStorage {
         await this.updateProduct(item.productId, {
           ...product,
           stockQuantity: newStockQuantity,
+          isFeatured: product.isFeatured ?? false,
         });
 
-        // Create stock movement for the sale
         await this.createStockMovement({
           productId: item.productId,
           productName: item.productName,
@@ -259,7 +267,6 @@ export class DatabaseStorage implements IStorage {
           notes: `Order ${orderNumber}`,
         });
 
-        // Update stock stats - increment sold, decrement available
         const stats = await this.getStockStatsByProduct(item.productId);
         if (stats) {
           await this.updateStockStats(item.productId, {
@@ -284,8 +291,8 @@ export class DatabaseStorage implements IStorage {
 
   async deleteOrder(id: string): Promise<boolean> {
     await db.delete(orderItems).where(eq(orderItems.orderId, id));
-    const result = await db.delete(orders).where(eq(orders.id, id)).returning();
-    return result.length > 0;
+    await db.delete(orders).where(eq(orders.id, id));
+    return true;
   }
 
   // Order Items
@@ -326,19 +333,17 @@ export class DatabaseStorage implements IStorage {
       await this.updateProduct(insertMovement.productId, {
         ...product,
         stockQuantity: finalQuantity,
+        isFeatured: product.isFeatured ?? false,
       });
 
-      // Update stock stats for manual stock movements
       const stats = await this.getStockStatsByProduct(insertMovement.productId);
       if (stats) {
         if (insertMovement.reason === 'purchase') {
-          // When purchasing stock, increment purchased counter and update available
           await this.updateStockStats(insertMovement.productId, {
             available: finalQuantity,
             purchased: stats.purchased + insertMovement.quantity,
           });
         } else {
-          // For other manual movements, just update available
           await this.updateStockStats(insertMovement.productId, {
             available: finalQuantity,
           });
@@ -426,9 +431,9 @@ export class DatabaseStorage implements IStorage {
         await this.updateProduct(item.productId, {
           ...product,
           stockQuantity: product.stockQuantity + item.quantity,
+          isFeatured: product.isFeatured ?? false,
         });
 
-        // Update stock stats - increment returned, and add to available
         const stats = await this.getStockStatsByProduct(item.productId);
         if (stats) {
           await this.updateStockStats(item.productId, {
@@ -476,8 +481,6 @@ export class DatabaseStorage implements IStorage {
 
   async createDiscountCode(data: InsertDiscountCode): Promise<DiscountCode> {
     const id = randomUUID();
-
-    // Ensure amount is properly formatted
     const amount = typeof data.amount === 'string' ? data.amount : String(data.amount);
 
     console.log('Database: Inserting discount code:', {
@@ -544,7 +547,7 @@ export class DatabaseStorage implements IStorage {
 
     const remainingAmount = currentAmount - usedAmount;
 
-    if (remainingAmount <= 0.01) { // Account for floating point precision
+    if (remainingAmount <= 0.01) {
       await db.delete(discountCodes).where(eq(discountCodes.id, discountCode.id));
       console.log('Database: Discount code fully used and deleted:', code);
       return { updated: null, wasDeleted: true, wasFound: true };
@@ -561,16 +564,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteDiscountCode(id: string): Promise<boolean> {
-    const result = await db.delete(discountCodes).where(eq(discountCodes.id, id)).returning();
-    return result.length > 0;
+    await db.delete(discountCodes).where(eq(discountCodes.id, id));
+    return true;
   }
 
   // Stock Stats
   async getStockStats(): Promise<StockStats[]> {
-    // Get all products to ensure we have current stock quantities
     const allProducts = await db.select().from(products);
 
-    // Get or create stock stats for each product
     for (const product of allProducts) {
       const existing = await db
         .select()
@@ -579,7 +580,6 @@ export class DatabaseStorage implements IStorage {
         .limit(1);
 
       if (existing.length === 0) {
-        // Create new stock stats entry
         await db.insert(stockStats).values({
           id: nanoid(),
           productId: product.id,
@@ -592,7 +592,6 @@ export class DatabaseStorage implements IStorage {
           purchased: 0,
         });
       } else {
-        // Update available quantity to match current product stock
         await db
           .update(stockStats)
           .set({
@@ -603,7 +602,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    const stats = await db.select().from(stockStats).orderBy(stockStats.productName);
+    const stats = await db.select().from(stockStats);
     return stats;
   }
 
@@ -632,7 +631,7 @@ export class DatabaseStorage implements IStorage {
       available: product.stockQuantity,
       sold: 0,
       returned: 0,
-      purchased: product.stockQuantity, // Initial purchase is the starting stock quantity
+      purchased: product.stockQuantity,
     });
 
     const statsResult = await db.select().from(stockStats).where(eq(stockStats.id, id));
@@ -640,10 +639,8 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-// Always use DatabaseStorage - requires DATABASE_URL environment variable to be set
 if (!process.env.DATABASE_URL) {
-  console.warn('WARNING: DATABASE_URL is not set. Database operations will fail.');
-  console.warn('Please set DATABASE_URL in the Secrets tool to use a MySQL database.');
+  throw new Error('DATABASE_URL environment variable is required. Please set it in the Secrets tool.');
 }
 
 export const storage = new DatabaseStorage();
