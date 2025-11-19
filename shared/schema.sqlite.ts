@@ -1,6 +1,8 @@
 
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod";
 
 /* ---------------------- PRODUCTS TABLE ---------------------- */
 export const products = sqliteTable("products", {
@@ -185,3 +187,29 @@ export const insertAccountSchema = createInsertSchema(accounts, {
 
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
 export type Account = typeof accounts.$inferSelect;
+
+/* ---------------------- PROFIT LOSS CONFIG TABLE ---------------------- */
+export const profitLossConfig = sqliteTable("profit_loss_config", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(), // 'indirect_expense' or 'indirect_income'
+  name: text("name").notNull(),
+  amount: real("amount").default(0.00).notNull(),
+  isActive: integer("is_active", { mode: 'boolean' }).default(true),
+  description: text("description"),
+  createdAt: integer("created_at", { mode: 'timestamp' }).default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: 'timestamp' }).default(sql`(strftime('%s', 'now'))`),
+});
+
+export const insertProfitLossConfigSchema = createInsertSchema(profitLossConfig, {
+  type: z.enum(["indirect_expense", "indirect_income"]),
+  name: z.string().min(1, "Name is required"),
+  amount: z.string().refine((val) => {
+    const num = parseFloat(val);
+    return !isNaN(num) && num >= 0;
+  }, { message: "Amount must be a non-negative number" }),
+  isActive: z.boolean().optional(),
+  description: z.string().optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type InsertProfitLossConfig = z.infer<typeof insertProfitLossConfigSchema>;
+export type ProfitLossConfig = typeof profitLossConfig.$inferSelect;

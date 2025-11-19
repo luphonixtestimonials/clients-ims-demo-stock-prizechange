@@ -315,3 +315,29 @@ export const insertAccountSchema = createInsertSchema(accounts, {
 
 export type InsertAccount = z.infer<typeof insertAccountSchema>;
 export type Account = typeof accounts.$inferSelect;
+
+/* ---------------------- PROFIT LOSS CONFIG TABLE ---------------------- */
+export const profitLossConfig = pgTable("profit_loss_config", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  type: varchar("type", { length: 50 }).notNull(), // 'indirect_expense' or 'indirect_income'
+  name: varchar("name", { length: 255 }).notNull(),
+  amount: numeric("amount", { precision: 10, scale: 2 }).default("0.00").notNull(),
+  isActive: boolean("is_active").default(true),
+  description: text("description"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertProfitLossConfigSchema = createInsertSchema(profitLossConfig, {
+  type: z.enum(["indirect_expense", "indirect_income"]),
+  name: z.string().min(1, "Name is required"),
+  amount: z.string().refine((val) => {
+    const num = parseFloat(val);
+    return !isNaN(num) && num >= 0;
+  }, { message: "Amount must be a non-negative number" }),
+  isActive: z.boolean().optional(),
+  description: z.string().optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type InsertProfitLossConfig = z.infer<typeof insertProfitLossConfigSchema>;
+export type ProfitLossConfig = typeof profitLossConfig.$inferSelect;

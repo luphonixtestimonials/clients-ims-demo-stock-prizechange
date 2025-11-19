@@ -1,10 +1,11 @@
 
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { TrendingUp, TrendingDown, DollarSign, ShoppingCart, Package, Calendar, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, ShoppingCart, Package, Calendar, BarChart3, Settings } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -28,6 +29,7 @@ import {
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Legend, ResponsiveContainer } from "recharts";
 import type { Product, OrderWithItems, ReturnWithItems, StockMovement, Account } from "@shared/schema";
 import { format, startOfDay, startOfHour, startOfMonth, startOfYear, subDays, subMonths, subYears } from "date-fns";
+import { ProfitLossConfigDialog } from "@/components/profit-loss-config-dialog";
 
 type TimeRange = "hourly" | "daily" | "monthly" | "yearly";
 
@@ -40,8 +42,20 @@ interface ProfitData {
   returns: number;
 }
 
+interface ProfitLossConfig {
+  id: string;
+  type: "indirect_expense" | "indirect_income";
+  name: string;
+  amount: string;
+  description?: string;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export default function ProfitLoss() {
   const [timeRange, setTimeRange] = useState<TimeRange>("daily");
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
 
   const { data: products = [], isLoading: productsLoading } = useQuery<Product[]>({
     queryKey: ["/api/products"],
@@ -63,7 +77,11 @@ export default function ProfitLoss() {
     queryKey: ["/api/accounts"],
   });
 
-  const isLoading = productsLoading || ordersLoading || returnsLoading || movementsLoading || accountsLoading;
+  const { data: plConfigs = [], isLoading: configsLoading } = useQuery<ProfitLossConfig[]>({
+    queryKey: ["/api/profit-loss-config"],
+  });
+
+  const isLoading = productsLoading || ordersLoading || returnsLoading || movementsLoading || accountsLoading || configsLoading;
 
   // Create a product lookup map for cost prices
   const productMap = useMemo(() => {
@@ -311,11 +329,15 @@ export default function ProfitLoss() {
     const grossProfitValue = grossProfit > 0 ? grossProfit : 0;
     const grossLossValue = grossProfit < 0 ? Math.abs(grossProfit) : 0;
 
-    // Indirect income (placeholder - can be expanded)
-    const indirectIncome = 0;
+    // Indirect income (from configured values)
+    const indirectIncome = plConfigs
+      .filter(c => c.type === "indirect_income" && c.isActive)
+      .reduce((sum, c) => sum + parseFloat(c.amount), 0);
 
-    // Indirect expenses (placeholder - can be expanded)
-    const indirectExpenses = 0;
+    // Indirect expenses (from configured values)
+    const indirectExpenses = plConfigs
+      .filter(c => c.type === "indirect_expense" && c.isActive)
+      .reduce((sum, c) => sum + parseFloat(c.amount), 0);
 
     // Formula: Net Profit = Gross Profit + Indirect Income - Indirect Expenses
     const netProfit = grossProfit + indirectIncome - indirectExpenses;
@@ -347,7 +369,7 @@ export default function ProfitLoss() {
       totalReturns,
       returnRate,
     };
-  }, [profitData, accounts, productMap, orders, returns, products, movements]);
+  }, [profitData, accounts, productMap, orders, returns, products, movements, plConfigs]);
 
   // Product category breakdown
   const categoryBreakdown = useMemo(() => {
@@ -410,6 +432,15 @@ export default function ProfitLoss() {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfigDialogOpen(true)}
+                className="gap-2"
+              >
+                <Settings className="h-4 w-4" />
+                Configure
+              </Button>
               <span className="text-sm text-muted-foreground">Time Range:</span>
               <Select value={timeRange} onValueChange={(value) => setTimeRange(value as TimeRange)}>
                 <SelectTrigger className="w-[180px]" data-testid="select-time-range">
@@ -695,6 +726,18 @@ export default function ProfitLoss() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Indirect Expenses</span>
+                  <span className="font-semibold text-red-600">
+                    ${statistics.indirectExpenses.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Indirect Income</span>
+                  <span className="font-semibold text-green-600">
+                    ${statistics.indirectIncome.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Return Rate</span>
                   <Badge variant={statistics.returnRate > 10 ? "destructive" : "secondary"}>
                     {statistics.returnRate.toFixed(2)}%
@@ -822,6 +865,8 @@ export default function ProfitLoss() {
           </Card>
         </div>
       </div>
+
+      <ProfitLossConfigDialog open={configDialogOpen} onOpenChange={setConfigDialogOpen} />
     </div>
   );
 }

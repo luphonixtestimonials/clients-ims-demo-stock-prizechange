@@ -13,6 +13,9 @@ import {
   stockStats,
   discountCodes,
   accounts,
+  profitLossConfig,
+} from "@shared/schema.mysql";
+import {
   insertProductSchema,
   insertOrderSchema,
   insertOrderItemSchema,
@@ -21,6 +24,7 @@ import {
   insertStockMovementSchema,
   insertDiscountCodeSchema,
 } from "@shared/schema";
+import { insertProfitLossConfigSchema } from "@shared/schema.mysql";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { nanoid } from "nanoid";
@@ -684,6 +688,72 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Return invoice generation error:', error);
       res.status(500).json({ error: "Failed to generate return invoice" });
+    }
+  });
+
+  // Profit Loss Config routes
+  app.get("/api/profit-loss-config", async (_req, res) => {
+    try {
+      const configs = await db.select().from(profitLossConfig);
+      res.json(configs);
+    } catch (error) {
+      console.error("Error fetching profit loss configs:", error);
+      res.status(500).json({ error: "Failed to fetch profit loss configurations" });
+    }
+  });
+
+  app.post("/api/profit-loss-config", async (req, res) => {
+    try {
+      const parsed = insertProfitLossConfigSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      const configData = {
+        ...parsed.data,
+        id: nanoid(),
+      };
+
+      await db.insert(profitLossConfig).values(configData);
+      const result = await db.select().from(profitLossConfig).where(eq(profitLossConfig.id, configData.id));
+      res.status(201).json(result[0]);
+    } catch (error) {
+      console.error("Error creating profit loss config:", error);
+      res.status(500).json({ error: "Failed to create profit loss configuration" });
+    }
+  });
+
+  app.patch("/api/profit-loss-config/:id", async (req, res) => {
+    try {
+      const parsed = insertProfitLossConfigSchema.safeParse(req.body);
+      if (!parsed.success) {
+        const error = fromZodError(parsed.error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      await db.update(profitLossConfig)
+        .set(parsed.data)
+        .where(eq(profitLossConfig.id, req.params.id));
+
+      const result = await db.select().from(profitLossConfig).where(eq(profitLossConfig.id, req.params.id));
+      if (result.length === 0) {
+        return res.status(404).json({ error: "Configuration not found" });
+      }
+      res.json(result[0]);
+    } catch (error) {
+      console.error("Error updating profit loss config:", error);
+      res.status(500).json({ error: "Failed to update profit loss configuration" });
+    }
+  });
+
+  app.delete("/api/profit-loss-config/:id", async (req, res) => {
+    try {
+      await db.delete(profitLossConfig).where(eq(profitLossConfig.id, req.params.id));
+      res.status(204).send();
+    } catch (error) {
+      console.error("Error deleting profit loss config:", error);
+      res.status(500).json({ error: "Failed to delete profit loss configuration" });
     }
   });
 

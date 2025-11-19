@@ -42,6 +42,7 @@ export const orders = mysqlTable("orders", {
   customerEmail: varchar("customer_email", { length: 150 }),
   customerPhone: varchar("customer_phone", { length: 20 }),
   status: varchar("status", { length: 50 }).default("pending").notNull(),
+  paymentMethod: varchar("payment_method", { length: 50 }).default("cash").notNull(),
   notes: text("notes"),
   totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
   createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
@@ -96,6 +97,7 @@ export const returns = mysqlTable("returns", {
   customerEmail: varchar("customer_email", { length: 150 }),
   status: varchar("status", { length: 50 }).default("pending").notNull(),
   reason: varchar("reason", { length: 255 }).notNull(),
+  paymentMethod: varchar("payment_method", { length: 50 }).default("cash").notNull(),
   notes: text("notes"),
   refundAmount: decimal("refund_amount", { precision: 10, scale: 2 }),
   creditAmount: decimal("credit_amount", { precision: 10, scale: 2 }),
@@ -166,3 +168,29 @@ export const insertAccountSchema = createInsertSchema(accounts, {
   transactionType: z.enum(["sale", "purchase", "return", "refund", "adjustment", "direct_income"]),
   revenue: z.string().min(1, "Revenue is required"),
 });
+
+/* ---------------------- PROFIT LOSS CONFIG TABLE ---------------------- */
+export const profitLossConfig = mysqlTable("profit_loss_config", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  type: varchar("type", { length: 50 }).notNull(), // 'indirect_expense' or 'indirect_income'
+  name: varchar("name", { length: 255 }).notNull(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).default("0.00").notNull(),
+  isActive: boolean("is_active").default(true),
+  description: text("description"),
+  createdAt: timestamp("created_at").default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertProfitLossConfigSchema = createInsertSchema(profitLossConfig, {
+  type: z.enum(["indirect_expense", "indirect_income"]),
+  name: z.string().min(1, "Name is required"),
+  amount: z.string().refine((val) => {
+    const num = parseFloat(val);
+    return !isNaN(num) && num >= 0;
+  }, { message: "Amount must be a non-negative number" }),
+  isActive: z.boolean().optional(),
+  description: z.string().optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type InsertProfitLossConfig = z.infer<typeof insertProfitLossConfigSchema>;
+export type ProfitLossConfig = typeof profitLossConfig.$inferSelect;
